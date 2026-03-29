@@ -86,6 +86,8 @@ export default function RoulettePage() {
   const deceleratingRef = useRef(false);
   const targetAngleRef = useRef(0);
   const spinTimeRef = useRef(0);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const lastSliceRef = useRef(-1);
 
   const [isSpinning, setIsSpinning] = useState(false);
   const [winner, setWinner] = useState<string | null>(null);
@@ -94,6 +96,92 @@ export default function RoulettePage() {
   const [glowIntensity, setGlowIntensity] = useState(0);
 
   const sliceAngle = (2 * Math.PI) / MEMBERS.length;
+
+  const initAudio = useCallback(() => {
+    if (!audioCtxRef.current) {
+      audioCtxRef.current = new AudioContext();
+    }
+    if (audioCtxRef.current.state === "suspended") {
+      audioCtxRef.current.resume();
+    }
+  }, []);
+
+  const playTick = useCallback((velocity: number) => {
+    const ctx = audioCtxRef.current;
+    if (!ctx) return;
+    const freq = 200 + velocity * 1800;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "square";
+    osc.frequency.setValueAtTime(freq, ctx.currentTime);
+    gain.gain.setValueAtTime(0.18, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.03);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.03);
+  }, []);
+
+  const playWhoosh = useCallback(() => {
+    const ctx = audioCtxRef.current;
+    if (!ctx) return;
+    const bufferSize = ctx.sampleRate * 0.4;
+    const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    const filter = ctx.createBiquadFilter();
+    filter.type = "bandpass";
+    filter.frequency.setValueAtTime(300, ctx.currentTime);
+    filter.frequency.exponentialRampToValueAtTime(2000, ctx.currentTime + 0.3);
+    filter.Q.value = 1.5;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0, ctx.currentTime);
+    gain.gain.linearRampToValueAtTime(0.4, ctx.currentTime + 0.05);
+    gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.4);
+    source.connect(filter);
+    filter.connect(gain);
+    gain.connect(ctx.destination);
+    source.start(ctx.currentTime);
+    source.stop(ctx.currentTime + 0.4);
+  }, []);
+
+  const playFanfare = useCallback(() => {
+    const ctx = audioCtxRef.current;
+    if (!ctx) return;
+    const notes = [261.6, 329.6, 392, 523.3, 659.3]; // C4 E4 G4 C5 E5
+    notes.forEach((freq, i) => {
+      const delay = i * 0.13;
+      const isLast = i === notes.length - 1;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "triangle";
+      osc.frequency.setValueAtTime(freq, ctx.currentTime + delay);
+      gain.gain.setValueAtTime(0, ctx.currentTime + delay);
+      gain.gain.linearRampToValueAtTime(0.35, ctx.currentTime + delay + 0.02);
+      gain.gain.linearRampToValueAtTime(isLast ? 0.25 : 0, ctx.currentTime + delay + (isLast ? 0.5 : 0.1));
+      if (isLast) gain.gain.linearRampToValueAtTime(0, ctx.currentTime + delay + 0.7);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(ctx.currentTime + delay);
+      osc.stop(ctx.currentTime + delay + (isLast ? 0.8 : 0.15));
+    });
+    // Harmony chord on last note
+    [523.3, 659.3, 783.9].forEach((freq) => {
+      const delay = (notes.length - 1) * 0.13;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(freq, ctx.currentTime + delay);
+      gain.gain.setValueAtTime(0.1, ctx.currentTime + delay);
+      gain.gain.linearRampToValueAtTime(0, ctx.currentTime + delay + 0.8);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(ctx.currentTime + delay);
+      osc.stop(ctx.currentTime + delay + 0.9);
+    });
+  }, []);
 
   const drawWheel = useCallback(() => {
     const canvas = canvasRef.current;
@@ -323,6 +411,8 @@ export default function RoulettePage() {
     deceleratingRef.current = false;
     setIsSpinning(true);
     spinTimeRef.current = 0;
+    initAudio();
+    playWhoosh();
 
     // Pick winner
     const winIdx = Math.floor(Math.random() * MEMBERS.length);
@@ -355,6 +445,13 @@ export default function RoulettePage() {
       const radius = Math.min(cx, cy) - 10;
 
       const progress = frame / totalDuration;
+
+      // Tick sound on slice boundary crossing
+      const currentSlice = Math.floor(((-angleRef.current % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI)) / sliceAngle) % MEMBERS.length;
+      if (currentSlice !== lastSliceRef.current) {
+        lastSliceRef.current = currentSlice;
+        playTick(velocityRef.current);
+      }
 
       if (progress < 0.3) {
         // Accelerate
@@ -413,6 +510,7 @@ export default function RoulettePage() {
         setTimeout(() => {
           setWinner(MEMBERS[winnerIndexRef.current]);
           setShowWinner(true);
+          playFanfare();
         }, 300);
 
         drawWheel();
@@ -420,7 +518,7 @@ export default function RoulettePage() {
     };
 
     animFrameRef.current = requestAnimationFrame(animate);
-  }, [drawWheel, sliceAngle, spawnParticles, spawnSparks]);
+  }, [drawWheel, sliceAngle, spawnParticles, spawnSparks, initAudio, playWhoosh, playTick, playFanfare]);
 
   useEffect(() => {
     drawWheel();
